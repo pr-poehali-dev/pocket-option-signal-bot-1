@@ -33,7 +33,11 @@ interface Trade {
 }
 interface Signal {
   pair: string; action: "BUY" | "SELL" | "HOLD";
-  price: number; conf: number; pattern: string; rsiVal: number; macdVal: number;
+  price: number; conf: number; accuracy: number;
+  rsiVal: number; macdVal: number; macdSignal: number;
+  atr: number; forecastMinutes: number;
+  targetPrice: number; targetChangePct: number;
+  bull: number; bear: number;
 }
 interface Notification { id: string; icon: string; msg: string; time: Date; color: string; }
 
@@ -209,68 +213,200 @@ function Dashboard({ prices, candles, activeTrades, balance, botActive, setBotAc
   );
 }
 
+// ─── Countdown timer для сигнала ─────────────────────────────────────────────
+function SignalCountdown({ minutes, action }: { minutes: number; action: string }) {
+  const [secsLeft, setSecsLeft] = useState(minutes * 60);
+  useEffect(() => {
+    setSecsLeft(minutes * 60);
+    const t = setInterval(() => setSecsLeft(s => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [minutes]);
+  const pct  = secsLeft / (minutes * 60);
+  const m    = Math.floor(secsLeft / 60);
+  const s    = secsLeft % 60;
+  const col  = action === "BUY" ? "var(--bot-green)" : action === "SELL" ? "var(--bot-red)" : "var(--bot-yellow)";
+  const size = 36;
+  const r    = 14;
+  const circ = 2 * Math.PI * r;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--bot-border)" strokeWidth={3} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={col} strokeWidth={3}
+          strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)} strokeLinecap="round"
+          style={{ transition: "stroke-dashoffset 1s linear" }} />
+      </svg>
+      <span className="mono" style={{ fontSize: 10, color: col, lineHeight: 1 }}>
+        {m > 0 ? `${m}м${s.toString().padStart(2, "0")}с` : `${s}с`}
+      </span>
+      <span style={{ fontSize: 9, color: "var(--bot-muted)" }}>прогноз</span>
+    </div>
+  );
+}
+
 // ─── Signals ──────────────────────────────────────────────────────────────────
-function Signals({ signals, prices, openTrade, botActive }: {
+function Signals({ signals, prices, openTrade, botActive, interval, setInterval: setIntervalProp, loading }: {
   signals: Signal[];
   prices: Record<string, PriceData>;
   openTrade: (sig: Signal) => void;
   botActive: boolean;
+  interval: string;
+  setInterval: (v: string) => void;
+  loading: boolean;
 }) {
+  const INTERVALS = [
+    { value: "1m",  label: "1 мин"  },
+    { value: "5m",  label: "5 мин"  },
+    { value: "15m", label: "15 мин" },
+    { value: "30m", label: "30 мин" },
+    { value: "1h",  label: "1 час"  },
+  ];
+
   return (
     <div className="stagger" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <h2 style={{ fontSize: 14, fontWeight: 700, color: "var(--bot-text)" }}>Торговые сигналы (реальные)</h2>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div className="pulse-dot" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--bot-green)" }} />
-          <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>Обновление каждые 30с</span>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: "var(--bot-text)" }}>Торговые сигналы · реальные данные</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="pulse-dot" style={{ width: 6, height: 6, borderRadius: "50%", background: loading ? "var(--bot-yellow)" : "var(--bot-green)" }} />
+          <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>{loading ? "Загрузка…" : "Обновлено"}</span>
         </div>
       </div>
 
-      {signals.length === 0 && (
-        <div className="glow-card p-8" style={{ textAlign: "center" as const, color: "var(--bot-muted)" }}>
-          <div style={{ fontSize: 13 }}>Загружаю данные с биржи…</div>
+      {/* Interval selector */}
+      <div className="glow-card p-3" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 11, color: "var(--bot-muted)", whiteSpace: "nowrap" as const }}>Таймфрейм прогноза:</span>
+        <div style={{ display: "flex", gap: 6 }}>
+          {INTERVALS.map(iv => (
+            <button key={iv.value} onClick={() => setIntervalProp(iv.value)} style={{
+              padding: "4px 12px", borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              background: interval === iv.value ? "var(--bot-accent)" : "var(--bot-surface-2)",
+              color: interval === iv.value ? "#fff" : "var(--bot-muted)",
+              border: interval === iv.value ? "none" : "1px solid var(--bot-border)",
+              transition: "all 0.15s"
+            }}>{iv.label}</button>
+          ))}
+        </div>
+        <span style={{ fontSize: 10, color: "var(--bot-muted)", marginLeft: "auto" }}>
+          Прогноз = 5 × {interval}
+        </span>
+      </div>
+
+      {/* Legend */}
+      <div style={{ display: "flex", gap: 16, padding: "0 4px" }}>
+        {[
+          { label: "Уверенность сигнала", desc: "сила индикаторов + бэктест" },
+          { label: "Точность", desc: "% верных сигналов исторически" },
+          { label: "Таймер", desc: "через сколько ждать движения" },
+        ].map((l, i) => (
+          <div key={i} style={{ fontSize: 10, color: "var(--bot-muted)" }}>
+            <span style={{ fontWeight: 600, color: "var(--bot-text)" }}>{l.label}</span> — {l.desc}
+          </div>
+        ))}
+      </div>
+
+      {/* Loading */}
+      {loading && signals.length === 0 && (
+        <div className="glow-card p-8" style={{ textAlign: "center" as const }}>
+          <div className="pulse-dot" style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--bot-blue)", margin: "0 auto 10px" }} />
+          <div style={{ fontSize: 13, color: "var(--bot-muted)" }}>Анализирую рынок, считаю бэктест…</div>
         </div>
       )}
 
+      {/* Signal cards */}
       {signals.map((s, i) => {
         const p = prices[s.pair.replace("/", "")];
+        const curPrice = p?.price ?? s.price;
+        const isUp = s.action === "BUY";
+        const isDown = s.action === "SELL";
+        const confColor = s.conf >= 75 ? "var(--bot-green)" : s.conf >= 60 ? "var(--bot-yellow)" : "var(--bot-muted)";
+        const accColor  = s.accuracy >= 65 ? "var(--bot-green)" : s.accuracy >= 50 ? "var(--bot-yellow)" : "var(--bot-red)";
+
         return (
-          <div key={i} className="glow-card p-4" style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <SignalBadge action={s.action} />
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
-                <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--bot-text)" }}>{s.pair}</span>
-                <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>{s.pattern}</span>
-              </div>
-              <div style={{ display: "flex", gap: 12 }}>
-                <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>RSI: <span className="mono" style={{ color: s.rsiVal > 70 ? "var(--bot-red)" : s.rsiVal < 30 ? "var(--bot-green)" : "var(--bot-text)" }}>{s.rsiVal.toFixed(1)}</span></span>
-                <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>MACD: <span className="mono" style={{ color: s.macdVal > 0 ? "var(--bot-green)" : "var(--bot-red)" }}>{s.macdVal > 0 ? "+" : ""}{s.macdVal.toFixed(2)}</span></span>
+          <div key={i} className="glow-card" style={{
+            border: s.action !== "HOLD" && s.conf >= 70
+              ? `1px solid ${isUp ? "rgba(63,185,80,0.3)" : "rgba(248,81,73,0.3)"}`
+              : "1px solid var(--bot-border)"
+          }}>
+            {/* Top row */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: "1px solid var(--bot-border)" }}>
+              <SignalBadge action={s.action} />
+              <span className="mono" style={{ fontSize: 15, fontWeight: 700, color: "var(--bot-text)" }}>{s.pair}</span>
+
+              {/* Прогноз цены */}
+              {s.action !== "HOLD" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <Icon name={isUp ? "TrendingUp" : "TrendingDown"} size={13}
+                    style={{ color: isUp ? "var(--bot-green)" : "var(--bot-red)" }} />
+                  <span className="mono" style={{ fontSize: 12, color: isUp ? "var(--bot-green)" : "var(--bot-red)" }}>
+                    {isUp ? "+" : ""}{s.targetChangePct.toFixed(2)}% → ${s.targetPrice > 100 ? Math.round(s.targetPrice).toLocaleString() : s.targetPrice.toFixed(5)}
+                  </span>
+                </div>
+              )}
+
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
+                {/* Текущая цена */}
+                <div style={{ textAlign: "right" as const }}>
+                  <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: "var(--bot-text)" }}>
+                    ${curPrice > 100 ? Math.round(curPrice).toLocaleString() : curPrice.toFixed(5)}
+                  </div>
+                  {p && <PriceTag change={p.change} />}
+                </div>
+                {/* Таймер */}
+                {s.action !== "HOLD" && <SignalCountdown minutes={s.forecastMinutes} action={s.action} />}
+                {/* Открыть */}
+                <button disabled={!botActive || s.action === "HOLD"} onClick={() => openTrade(s)} style={{
+                  padding: "8px 18px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                  cursor: botActive && s.action !== "HOLD" ? "pointer" : "not-allowed",
+                  background: !botActive || s.action === "HOLD" ? "var(--bot-surface-2)" : "var(--bot-accent)",
+                  color: !botActive || s.action === "HOLD" ? "var(--bot-muted)" : "#fff",
+                  border: "none", transition: "all 0.15s"
+                }}>
+                  {s.action === "HOLD" ? "Ожидать" : "Открыть"}
+                </button>
               </div>
             </div>
-            <div style={{ textAlign: "right" as const, minWidth: 90 }}>
-              <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "var(--bot-text)" }}>
-                ${p ? (p.price > 100 ? Math.round(p.price).toLocaleString() : p.price.toFixed(4)) : s.price.toFixed(4)}
+
+            {/* Bottom row — метрики */}
+            <div style={{ display: "flex", gap: 0, padding: "10px 16px" }}>
+              {/* Уверенность */}
+              <div style={{ flex: 1, borderRight: "1px solid var(--bot-border)", paddingRight: 16 }}>
+                <div style={{ fontSize: 10, color: "var(--bot-muted)", marginBottom: 4 }}>Уверенность</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, height: 4, background: "var(--bot-border)", borderRadius: 2 }}>
+                    <div style={{ width: `${s.conf}%`, height: "100%", background: confColor, borderRadius: 2, transition: "width 0.5s" }} />
+                  </div>
+                  <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: confColor, minWidth: 36 }}>{s.conf}%</span>
+                </div>
               </div>
-              {p && <PriceTag change={p.change} />}
-            </div>
-            <div style={{ minWidth: 48, textAlign: "center" as const }}>
-              <div style={{ fontSize: 10, color: "var(--bot-muted)" }}>Уверен.</div>
-              <div className="mono" style={{ fontSize: 14, fontWeight: 700,
-                color: s.conf > 70 ? "var(--bot-green)" : s.conf > 50 ? "var(--bot-yellow)" : "var(--bot-muted)" }}>
-                {s.conf}%
+
+              {/* Историческая точность */}
+              <div style={{ flex: 1, borderRight: "1px solid var(--bot-border)", padding: "0 16px" }}>
+                <div style={{ fontSize: 10, color: "var(--bot-muted)", marginBottom: 4 }}>Точность (бэктест)</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, height: 4, background: "var(--bot-border)", borderRadius: 2 }}>
+                    <div style={{ width: `${s.accuracy}%`, height: "100%", background: accColor, borderRadius: 2, transition: "width 0.5s" }} />
+                  </div>
+                  <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: accColor, minWidth: 36 }}>{s.accuracy}%</span>
+                </div>
+              </div>
+
+              {/* Индикаторы */}
+              <div style={{ flex: 2, paddingLeft: 16, display: "flex", gap: 16, alignItems: "center" }}>
+                <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>
+                  RSI <span className="mono" style={{ color: s.rsiVal > 70 ? "var(--bot-red)" : s.rsiVal < 30 ? "var(--bot-green)" : "var(--bot-text)" }}>{s.rsiVal.toFixed(0)}</span>
+                </span>
+                <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>
+                  MACD <span className="mono" style={{ color: s.macdVal > s.macdSignal ? "var(--bot-green)" : "var(--bot-red)" }}>{s.macdVal > 0 ? "+" : ""}{s.macdVal.toFixed(2)}</span>
+                </span>
+                <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>
+                  Bull/Bear <span className="mono" style={{ color: "var(--bot-text)" }}>{s.bull}/{s.bear}</span>
+                </span>
+                <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>
+                  ATR <span className="mono" style={{ color: "var(--bot-blue)" }}>{s.atr > 1 ? s.atr.toFixed(1) : s.atr.toFixed(4)}</span>
+                </span>
               </div>
             </div>
-            <button
-              disabled={!botActive || s.action === "HOLD"}
-              onClick={() => openTrade(s)}
-              style={{
-                padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: botActive && s.action !== "HOLD" ? "pointer" : "not-allowed",
-                background: !botActive || s.action === "HOLD" ? "var(--bot-surface-2)" : "var(--bot-accent)",
-                color: !botActive || s.action === "HOLD" ? "var(--bot-muted)" : "#fff",
-                border: "none", transition: "all 0.15s"
-              }}>
-              {s.action === "HOLD" ? "Ожидать" : "Открыть"}
-            </button>
           </div>
         );
       })}
@@ -694,13 +830,15 @@ export default function Index() {
   const [strategy, setStrategy]       = useState("Комбо");
   const [symbol, setSymbol]           = useState("BTCUSDT");
 
-  const [prices, setPrices]           = useState<Record<string, PriceData>>({});
-  const [candlesMap, setCandlesMap]   = useState<Record<string, Candle[]>>({});
-  const [signals, setSignals]         = useState<Signal[]>([]);
+  const [prices, setPrices]             = useState<Record<string, PriceData>>({});
+  const [candlesMap, setCandlesMap]     = useState<Record<string, Candle[]>>({});
+  const [signals, setSignals]           = useState<Signal[]>([]);
+  const [loadingSignals, setLoadingSig] = useState(false);
+  const [sigInterval, setSigInterval]   = useState("5m");
   const [activeTrades, setActiveTrades] = useState<Trade[]>([]);
-  const [notifications, setNotifs]    = useState<Notification[]>([]);
-  const [nnResult, setNNResult]       = useState<NNResult | null>(null);
-  const [isTraining, setIsTraining]   = useState(false);
+  const [notifications, setNotifs]      = useState<Notification[]>([]);
+  const [nnResult, setNNResult]         = useState<NNResult | null>(null);
+  const [isTraining, setIsTraining]     = useState(false);
 
   const tradesRef = useRef(activeTrades);
   tradesRef.current = activeTrades;
@@ -710,45 +848,52 @@ export default function Index() {
     setNotifs(prev => [...prev.slice(-19), { id: Date.now().toString(), icon, msg, time: new Date(), color }]);
   }, []);
 
-  // ── Fetch prices — напрямую с Binance (CORS разрешён для браузеров) ────────
-  const fetchPrices = useCallback(async () => {
-    const results: Record<string, PriceData> = {};
-    await Promise.all(
-      PAIRS.map(async (pair) => {
-        try {
-          const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${pair.id}`);
-          if (!res.ok) return;
-          const t = await res.json();
-          results[pair.id] = {
-            price:       parseFloat(t.lastPrice),
-            change:      parseFloat(t.priceChangePercent),
-            high:        parseFloat(t.highPrice),
-            low:         parseFloat(t.lowPrice),
-            volume:      parseFloat(t.volume),
-          };
-        } catch (e) { void e; }
-      })
-    );
-    if (Object.keys(results).length > 0) setPrices(results);
+  // ── Fetch signals — через бэкенд (бэктест + все индикаторы) ───────────────
+  const fetchSignals = useCallback(async (iv: string) => {
+    setLoadingSig(true);
+    try {
+      const res = await fetch(`${API_URL}?action=signals&interval=${iv}&limit=150`);
+      if (!res.ok) return;
+      const raw: Array<{
+        pair: string; action: string; price: number; conf: number; accuracy: number;
+        rsi: number; macd: number; macdSignal: number; atr: number;
+        forecastMinutes: number; targetPrice: number; targetChangePct: number;
+        bull: number; bear: number;
+      }> = await res.json();
+      const sigs: Signal[] = raw
+        .filter(r => !("error" in r))
+        .map(r => ({
+          pair: r.pair.replace("USDT", "/USDT"),
+          action: r.action as "BUY" | "SELL" | "HOLD",
+          price: r.price, conf: r.conf, accuracy: r.accuracy,
+          rsiVal: r.rsi, macdVal: r.macd, macdSignal: r.macdSignal,
+          atr: r.atr, forecastMinutes: r.forecastMinutes,
+          targetPrice: r.targetPrice, targetChangePct: r.targetChangePct,
+          bull: r.bull, bear: r.bear,
+        }));
+      setSignals(sigs);
+      // Обновляем цены из сигналов
+      const priceUpdate: Record<string, PriceData> = {};
+      raw.forEach(r => {
+        priceUpdate[r.pair] = { price: r.price, change: r.targetChangePct, high: r.price, low: r.price, volume: 0 };
+      });
+      setPrices(prev => ({ ...prev, ...priceUpdate }));
+    } catch (e) { void e; }
+    finally { setLoadingSig(false); }
   }, []);
 
-  // ── Fetch candles — через бэкенд (свечи работают) ─────────────────────────
-  const fetchCandles = useCallback(async (sym: string) => {
+  // ── Fetch prices — через бэкенд ────────────────────────────────────────────
+  const fetchPrices = useCallback(async () => {
     try {
-      // Сначала пробуем напрямую Binance
-      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=5m&limit=100`);
-      if (res.ok) {
-        const raw = await res.json();
-        const data: Candle[] = raw.map((c: unknown[]) => ({
-          time: Number(c[0]), open: parseFloat(c[1] as string),
-          high: parseFloat(c[2] as string), low: parseFloat(c[3] as string),
-          close: parseFloat(c[4] as string), volume: parseFloat(c[5] as string),
-        }));
-        setCandlesMap(prev => ({ ...prev, [sym]: data }));
-        return data;
-      }
+      const res = await fetch(`${API_URL}?action=prices`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Object.keys(data).length > 0) setPrices(data);
     } catch (e) { void e; }
-    // Fallback: через бэкенд
+  }, []);
+
+  // ── Fetch candles — через бэкенд ───────────────────────────────────────────
+  const fetchCandles = useCallback(async (sym: string) => {
     try {
       const res = await fetch(`${API_URL}?action=klines&symbol=${sym}&interval=5m&limit=100`);
       if (!res.ok) return;
@@ -756,46 +901,6 @@ export default function Index() {
       setCandlesMap(prev => ({ ...prev, [sym]: data }));
       return data;
     } catch (e) { void e; }
-  }, []);
-
-  // ── Generate signals from real candles ────────────────────────────────────
-  const generateSignals = useCallback((candlesData: Record<string, Candle[]>, pricesData: Record<string, PriceData>) => {
-    const sigs: Signal[] = [];
-    for (const pair of PAIRS) {
-      const cs = candlesData[pair.id];
-      if (!cs || cs.length < 30) continue;
-      const closes = cs.map(c => c.close);
-      const last   = closes.length - 1;
-      const rsiV   = rsi(closes, 14);
-      const macdV  = macd(closes, 12, 26, 9);
-      const ema9   = ema(closes, 9);
-      const ema21  = ema(closes, 21);
-
-      const rsiVal  = rsiV[last] ?? 50;
-      const macdVal = macdV.macdLine[last] ?? 0;
-      const macdSig = macdV.signalLine[last] ?? 0;
-      const ema9v   = ema9[last] ?? closes[last];
-      const ema21v  = ema21[last] ?? closes[last];
-
-      let action: "BUY" | "SELL" | "HOLD" = "HOLD";
-      let conf = 50;
-
-      const bullSignals = [rsiVal < 65, macdVal > macdSig, ema9v > ema21v].filter(Boolean).length;
-      const bearSignals = [rsiVal > 55, macdVal < macdSig, ema9v < ema21v].filter(Boolean).length;
-
-      if (rsiVal < 35 && macdVal > macdSig) { action = "BUY";  conf = 85; }
-      else if (rsiVal > 65 && macdVal < macdSig) { action = "SELL"; conf = 83; }
-      else if (bullSignals >= 2) { action = "BUY";  conf = 55 + bullSignals * 10; }
-      else if (bearSignals >= 2) { action = "SELL"; conf = 55 + bearSignals * 10; }
-
-      sigs.push({
-        pair: pair.label, action, price: closes[last],
-        conf: Math.min(95, conf), pattern: detectPattern(cs),
-        rsiVal, macdVal,
-      });
-    }
-    sigs.sort((a, b) => b.conf - a.conf);
-    setSignals(sigs);
   }, []);
 
   // ── Update trailing stops ─────────────────────────────────────────────────
@@ -850,8 +955,8 @@ export default function Index() {
   const openTrade = useCallback((sig: Signal) => {
     const sym  = sig.pair.replace("/", "");
     const p    = prices[sym];
-    if (!p) return;
-    const entry  = p.price;
+    const entry  = p?.price ?? sig.price;
+    if (!entry) return;
     const amount = (balance * riskPct / 100) / entry;
     const cs     = candlesMap[sym] || [];
     const atrV   = cs.length >= 14 ? atr(cs, 14) : [entry * 0.01];
@@ -888,23 +993,16 @@ export default function Index() {
 
   useEffect(() => {
     // Initial load
+    fetchSignals(sigInterval);
     fetchPrices();
     PAIRS.forEach(p => fetchCandles(p.id));
 
-    const priceInterval = setInterval(fetchPrices, 10000);
-    const candleInterval = setInterval(() => {
-      PAIRS.forEach(p => fetchCandles(p.id));
-    }, 30000);
+    const signalInterval = setInterval(() => fetchSignals(sigInterval), 60000);
+    const priceInterval  = setInterval(fetchPrices, 15000);
+    const candleInterval = setInterval(() => PAIRS.forEach(p => fetchCandles(p.id)), 60000);
 
-    return () => { clearInterval(priceInterval); clearInterval(candleInterval); };
-  }, [fetchPrices, fetchCandles, symbol]);
-
-  // ── Regenerate signals когда загрузились свечи (цены опциональны) ─────────
-  useEffect(() => {
-    if (Object.keys(candlesMap).length > 0) {
-      generateSignals(candlesMap, prices);
-    }
-  }, [prices, candlesMap, generateSignals]);
+    return () => { clearInterval(signalInterval); clearInterval(priceInterval); clearInterval(candleInterval); };
+  }, [fetchSignals, fetchPrices, fetchCandles, sigInterval]);
 
   // ── Update trailing stops every 10s ──────────────────────────────────────
   useEffect(() => {
@@ -1005,7 +1103,7 @@ export default function Index() {
 
         <div key={tab}>
           {tab === "dashboard"  && <Dashboard prices={prices} candles={candles} activeTrades={activeTrades} balance={balance} botActive={botActive} setBotActive={setBotActive} addNotif={addNotif} />}
-          {tab === "signals"    && <Signals signals={signals} prices={prices} openTrade={openTrade} botActive={botActive} />}
+          {tab === "signals"    && <Signals signals={signals} prices={prices} openTrade={openTrade} botActive={botActive} interval={sigInterval} setInterval={iv => { setSigInterval(iv); fetchSignals(iv); }} loading={loadingSignals} />}
           {tab === "ai"         && <AITab candles={candles} nnResult={nnResult} symbol={symbol} setSymbol={sym => { setSymbol(sym); fetchCandles(sym); }} isTraining={isTraining} />}
           {tab === "settings"   && <Settings balance={balance} setBalance={setBalance} trailMult={trailMult} setTrailMult={setTrailMult} riskPct={riskPct} setRiskPct={setRiskPct} strategy={strategy} setStrategy={setStrategy} addNotif={addNotif} />}
           {tab === "portfolio"  && <Portfolio activeTrades={activeTrades} closeTrade={closeTrade} prices={prices} />}

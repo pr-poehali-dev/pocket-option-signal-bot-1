@@ -1,19 +1,19 @@
 {
   "tests": [
     {
-      "name": "Получить свечи BTC",
+      "name": "Сигналы всех пар",
       "method": "GET",
-      "path": "/?action=klines&symbol=BTCUSDT&interval=5m&limit=10",
+      "path": "/?action=signals&interval=5m",
       "expectedStatus": 200,
       "expectedBody": {},
       "bodyMatcher": "partial"
     },
     {
-      "name": "Получить стакан BTC",
+      "name": "Получить свечи BTC",
       "method": "GET",
-      "path": "/?action=orderbook&symbol=BTCUSDT",
+      "path": "/?action=klines&symbol=BTCUSDT&interval=5m&limit=10",
       "expectedStatus": 200,
-      "expectedBody": {"buyPressure": 50},
+      "expectedBody": {},
       "bodyMatcher": "partial"
     }
   ]
