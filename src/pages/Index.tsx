@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Icon from "@/components/ui/icon";
-import { rsi, macd, ema, bollinger, atr, volatilityPct, trailingStop, detectPattern, type Candle } from "@/lib/indicators";
-import { analyzeWithNN, resetNN, type NNResult } from "@/lib/neuralNet";
+import { type Candle } from "@/lib/indicators";
 
 const API_URL = "https://functions.poehali.dev/4a3e398d-b833-42a0-9726-c5c1a66978c4";
 
@@ -415,173 +414,249 @@ function Signals({ signals, prices, openTrade, botActive, interval, setInterval:
 }
 
 // ─── AI Neural Network Tab ────────────────────────────────────────────────────
-function AITab({ candles, nnResult, symbol, setSymbol, isTraining }: {
-  candles: Candle[]; nnResult: NNResult | null; symbol: string;
-  setSymbol: (s: string) => void; isTraining: boolean;
-}) {
-  if (!candles.length) return (
-    <div style={{ padding: 40, textAlign: "center" as const, color: "var(--bot-muted)" }}>Загрузка данных…</div>
-  );
+interface NNData {
+  pair: string; action: string; price: number;
+  conf: number; accuracy: number; nnProb: number; nnConf: number; indConf: number; agreement: string;
+  rsi: number; stochRsi: number; williamsR: number; cci: number;
+  macd: number; macdSignal: number; ema9: number; ema21: number; atr: number;
+  bull: number; bear: number; forecastMinutes: number;
+  targetPrice: number; targetChangePct: number;
+}
 
-  const closes = candles.map(c => c.close);
-  const rsiV   = rsi(closes, 14);
-  const macdV  = macd(closes, 12, 26, 9);
-  const ema9   = ema(closes, 9);
-  const ema21  = ema(closes, 21);
-  const boll   = bollinger(closes, 20, 2);
-  const atrV   = atr(candles, 14);
-  const last   = candles.length - 1;
-  const ts     = candles.length >= 14 ? trailingStop(candles, 2, 14) : null;
-  const vol    = volatilityPct(candles, 14);
+function AITab({ candles, symbol, setSymbol }: {
+  candles: Candle[]; symbol: string; setSymbol: (s: string) => void;
+}) {
+  const [nnData, setNNData]       = useState<NNData | null>(null);
+  const [loading, setLoading]     = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [countdown, setCountdown] = useState(30);
+  const [interval, setInterval_]  = useState("5m");
+
+  const fetchNN = useCallback(async (sym: string, iv: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}?action=nn&symbol=${sym}&interval=${iv}&limit=300`);
+      if (!res.ok) return;
+      const d: NNData = await res.json();
+      setNNData(d);
+      setLastUpdate(new Date());
+      setCountdown(30);
+    } catch (e) { void e; }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    fetchNN(symbol, interval);
+  }, [symbol, interval, fetchNN]);
+
+  useEffect(() => {
+    const poll = setInterval(() => fetchNN(symbol, interval), 30000);
+    return () => clearInterval(poll);
+  }, [symbol, interval, fetchNN]);
+
+  useEffect(() => {
+    const t = setInterval(() => setCountdown(c => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [lastUpdate]);
+
+  const d = nnData;
+  const isUp   = d?.action === "BUY";
+  const isDown = d?.action === "SELL";
+  const actionColor = isUp ? "var(--bot-green)" : isDown ? "var(--bot-red)" : "var(--bot-yellow)";
 
   return (
-    <div className="stagger" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div className="stagger" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ fontSize: 14, fontWeight: 700, color: "var(--bot-text)" }}>Нейросеть — анализ и прогноз</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          {PAIRS.map(p => (
-            <button key={p.id} onClick={() => setSymbol(p.id)} style={{
-              padding: "4px 10px", borderRadius: 5, fontSize: 11, cursor: "pointer",
-              background: symbol === p.id ? "var(--bot-accent)" : "var(--bot-surface-2)",
-              color: symbol === p.id ? "#fff" : "var(--bot-muted)",
-              border: symbol === p.id ? "none" : "1px solid var(--bot-border)"
-            }}>{p.label.split("/")[0]}</button>
-          ))}
-        </div>
-      </div>
-
-      {/* NN Result block */}
-      <div className="glow-card p-5" style={{ position: "relative" as const, overflow: "hidden" }}>
-        {isTraining && (
-          <div style={{
-            position: "absolute" as const, inset: 0, background: "rgba(8,12,16,0.8)",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 10, zIndex: 1
-          }}>
-            <div className="pulse-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--bot-blue)" }} />
-            <span style={{ color: "var(--bot-blue)", fontSize: 13 }}>Обучение нейросети…</span>
-          </div>
-        )}
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--bot-text)", marginBottom: 16 }}>
-          Прогноз нейросети · {PAIRS.find(p => p.id === symbol)?.label}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 16 }}>
-          <div style={{ textAlign: "center" as const }}>
-            <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 6 }}>Направление</div>
-            <div style={{ fontSize: 28, fontWeight: 800, color: nnResult?.prediction === "UP" ? "var(--bot-green)" : "var(--bot-red)" }}>
-              {nnResult ? (nnResult.prediction === "UP" ? "▲ ВВЕРХ" : "▼ ВНИЗ") : "—"}
-            </div>
-          </div>
-          <div style={{ textAlign: "center" as const }}>
-            <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 6 }}>Уверенность</div>
-            <div className="mono" style={{ fontSize: 28, fontWeight: 800, color: "var(--bot-blue)" }}>
-              {nnResult ? `${nnResult.confidence}%` : "—"}
-            </div>
-          </div>
-          <div style={{ textAlign: "center" as const }}>
-            <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 6 }}>Точность модели</div>
-            <div className="mono" style={{ fontSize: 28, fontWeight: 800, color: "var(--bot-yellow)" }}>
-              {nnResult ? `${nnResult.accuracy}%` : "—"}
-            </div>
-          </div>
-          <div style={{ textAlign: "center" as const }}>
-            <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 6 }}>P(UP)</div>
-            <div className="mono" style={{ fontSize: 28, fontWeight: 800, color: "var(--bot-text)" }}>
-              {nnResult ? `${(nnResult.upProb * 100).toFixed(0)}%` : "—"}
-            </div>
-          </div>
-        </div>
-
-        {/* Probability bar */}
-        {nnResult && (
-          <div style={{ marginTop: 16 }}>
-            <div style={{ height: 6, borderRadius: 3, background: "var(--bot-border)", overflow: "hidden" }}>
-              <div style={{ width: `${nnResult.upProb * 100}%`, height: "100%", background: "linear-gradient(90deg, var(--bot-red), var(--bot-green))", transition: "width 0.5s" }} />
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-              <span style={{ fontSize: 10, color: "var(--bot-red)" }}>ВНИЗ {(100 - nnResult.upProb * 100).toFixed(0)}%</span>
-              <span style={{ fontSize: 10, color: "var(--bot-green)" }}>ВВЕРХ {(nnResult.upProb * 100).toFixed(0)}%</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Chart */}
-      <div className="glow-card p-4">
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--bot-text)", marginBottom: 12 }}>График свечей</div>
-        <div style={{ overflowX: "auto" }}>
-          <CandleChart candles={candles} height={100} />
-        </div>
-      </div>
-
-      {/* Indicators */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div className="glow-card p-5">
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--bot-text)", marginBottom: 14 }}>Индикаторы</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {[
-              { name: "RSI (14)",   value: (rsiV[last] ?? 0).toFixed(1),  status: (rsiV[last] ?? 50) > 70 ? "Перекуплен" : (rsiV[last] ?? 50) < 30 ? "Перепродан" : "Нейтральный", color: (rsiV[last] ?? 50) > 70 ? "var(--bot-red)" : (rsiV[last] ?? 50) < 30 ? "var(--bot-green)" : "var(--bot-yellow)" },
-              { name: "MACD",       value: (macdV.macdLine[last] ?? 0) > 0 ? "+" + (macdV.macdLine[last] ?? 0).toFixed(1) : (macdV.macdLine[last] ?? 0).toFixed(1), status: (macdV.macdLine[last] ?? 0) > (macdV.signalLine[last] ?? 0) ? "Бычий" : "Медвежий", color: (macdV.macdLine[last] ?? 0) > 0 ? "var(--bot-green)" : "var(--bot-red)" },
-              { name: "EMA9/EMA21", value: (ema9[last] ?? 0) > (ema21[last] ?? 0) ? "Выше" : "Ниже", status: (ema9[last] ?? 0) > (ema21[last] ?? 0) ? "Бычий" : "Медвежий", color: (ema9[last] ?? 0) > (ema21[last] ?? 0) ? "var(--bot-green)" : "var(--bot-red)" },
-              { name: "Bollinger",  value: boll.upper[last] ? `±${((boll.upper[last] - boll.lower[last]) / closes[last] * 100).toFixed(1)}%` : "—", status: closes[last] > (boll.upper[last] ?? 0) ? "Выше верхней" : closes[last] < (boll.lower[last] ?? 0) ? "Ниже нижней" : "В канале", color: "var(--bot-blue)" },
-              { name: "ATR (14)",   value: (atrV[last] ?? 0).toFixed(0), status: "Волатильность", color: "var(--bot-yellow)" },
-            ].map((ind, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 8, borderBottom: i < 4 ? "1px solid var(--bot-border)" : "none" }}>
-                <span style={{ fontSize: 12, color: "var(--bot-muted)" }}>{ind.name}</span>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <span className="mono" style={{ fontSize: 12, color: "var(--bot-text)" }}>{ind.value}</span>
-                  <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, background: "var(--bot-surface-2)", color: ind.color }}>{ind.status}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="glow-card p-5">
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--bot-text)", marginBottom: 14 }}>Трейлинг-стоп</div>
-          {ts ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: "var(--bot-surface-2)", borderRadius: 6 }}>
-                <span style={{ fontSize: 12, color: "var(--bot-muted)" }}>Тренд</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: ts.trend === "up" ? "var(--bot-green)" : "var(--bot-red)" }}>{ts.trend === "up" ? "▲ Восходящий" : "▼ Нисходящий"}</span>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 6 }}>Стоп для LONG (2×ATR ниже цены)</div>
-                <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: "var(--bot-green)" }}>${ts.stopLong.toFixed(2)}</div>
-                <div style={{ fontSize: 11, color: "var(--bot-muted)", marginTop: 2 }}>
-                  Отступ: ${(closes[last] - ts.stopLong).toFixed(2)} ({((closes[last] - ts.stopLong) / closes[last] * 100).toFixed(2)}%)
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 6 }}>Стоп для SHORT (2×ATR выше цены)</div>
-                <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: "var(--bot-red)" }}>${ts.stopShort.toFixed(2)}</div>
-                <div style={{ fontSize: 11, color: "var(--bot-muted)", marginTop: 2 }}>
-                  Отступ: ${(ts.stopShort - closes[last]).toFixed(2)} ({((ts.stopShort - closes[last]) / closes[last] * 100).toFixed(2)}%)
-                </div>
-              </div>
-              <div style={{ padding: "10px 14px", background: "rgba(88,166,255,0.08)", borderRadius: 6, border: "1px solid rgba(88,166,255,0.2)" }}>
-                <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 4 }}>ATR (14) — волатильность</div>
-                <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: "var(--bot-blue)" }}>{(atrV[last] ?? 0).toFixed(2)}</div>
-                <div style={{ fontSize: 11, color: "var(--bot-muted)" }}>= {((atrV[last] ?? 0) / closes[last] * 100).toFixed(2)}% от цены</div>
-              </div>
-              <div style={{ padding: "10px 14px", background: "var(--bot-surface-2)", borderRadius: 6 }}>
-                <div style={{ fontSize: 11, color: "var(--bot-muted)", marginBottom: 4 }}>Волатильность (14 свечей)</div>
-                <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: vol > 2 ? "var(--bot-red)" : "var(--bot-yellow)" }}>{vol.toFixed(2)}%</div>
-              </div>
-            </div>
-          ) : (
-            <div style={{ color: "var(--bot-muted)", fontSize: 12 }}>Недостаточно данных</div>
-          )}
-        </div>
-      </div>
-
-      {/* Pattern */}
-      <div className="glow-card p-4" style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <Icon name="Eye" size={20} style={{ color: "var(--bot-blue)" }} />
         <div>
-          <div style={{ fontSize: 11, color: "var(--bot-muted)" }}>Обнаруженный паттерн</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--bot-text)" }}>{detectPattern(candles)}</div>
+          <h2 style={{ fontSize: 14, fontWeight: 700, color: "var(--bot-text)", margin: 0 }}>Нейросеть · ансамбль 3 MLP</h2>
+          <div style={{ fontSize: 10, color: "var(--bot-muted)", marginTop: 2 }}>
+            15 признаков · 300 свечей · обновление каждые 30с
+            {lastUpdate && <span> · обновлено {lastUpdate.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Countdown */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 6, background: "var(--bot-surface-2)", border: "1px solid var(--bot-border)" }}>
+            <div className="pulse-dot" style={{ width: 5, height: 5, borderRadius: "50%", background: loading ? "var(--bot-yellow)" : "var(--bot-green)" }} />
+            <span className="mono" style={{ fontSize: 11, color: "var(--bot-muted)" }}>{loading ? "…" : `${countdown}с`}</span>
+          </div>
+          <button onClick={() => fetchNN(symbol, interval)} disabled={loading} style={{
+            padding: "5px 12px", borderRadius: 5, fontSize: 11, cursor: "pointer",
+            background: "var(--bot-accent)", color: "#fff", border: "none"
+          }}>Обновить</button>
         </div>
       </div>
+
+      {/* Pair + interval selector */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+        {PAIRS.map(p => (
+          <button key={p.id} onClick={() => setSymbol(p.id)} style={{
+            padding: "5px 12px", borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: "pointer",
+            background: symbol === p.id ? "var(--bot-accent)" : "var(--bot-surface-2)",
+            color: symbol === p.id ? "#fff" : "var(--bot-muted)",
+            border: symbol === p.id ? "none" : "1px solid var(--bot-border)"
+          }}>{p.label}</button>
+        ))}
+        <div style={{ borderLeft: "1px solid var(--bot-border)", margin: "0 4px" }} />
+        {["1m","5m","15m","30m","1h"].map(iv => (
+          <button key={iv} onClick={() => setInterval_(iv)} style={{
+            padding: "5px 10px", borderRadius: 5, fontSize: 11, cursor: "pointer",
+            background: interval === iv ? "var(--bot-surface-2)" : "transparent",
+            color: interval === iv ? "var(--bot-text)" : "var(--bot-muted)",
+            border: "1px solid var(--bot-border)"
+          }}>{iv}</button>
+        ))}
+      </div>
+
+      {/* Loading overlay */}
+      {loading && !d && (
+        <div className="glow-card p-10" style={{ textAlign: "center" as const }}>
+          <div className="pulse-dot" style={{ width: 12, height: 12, borderRadius: "50%", background: "var(--bot-blue)", margin: "0 auto 12px" }} />
+          <div style={{ color: "var(--bot-muted)", fontSize: 13 }}>Обучаю нейросеть на 300 свечах…</div>
+          <div style={{ color: "var(--bot-muted)", fontSize: 11, marginTop: 6 }}>Это занимает ~10–15 секунд</div>
+        </div>
+      )}
+
+      {d && (
+        <>
+          {/* Main prediction card */}
+          <div className="glow-card p-5" style={{
+            border: `1px solid ${isUp ? "rgba(63,185,80,0.4)" : isDown ? "rgba(248,81,73,0.4)" : "rgba(210,153,34,0.4)"}`,
+            position: "relative" as const
+          }}>
+            {loading && (
+              <div style={{ position: "absolute" as const, top: 10, right: 10, display: "flex", alignItems: "center", gap: 5 }}>
+                <div className="pulse-dot" style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--bot-yellow)" }} />
+                <span style={{ fontSize: 10, color: "var(--bot-yellow)" }}>обновляется</span>
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 20, marginBottom: 20 }}>
+              {[
+                { label: "Сигнал", val: d.action === "BUY" ? "▲ ВВЕРХ" : d.action === "SELL" ? "▼ ВНИЗ" : "— ЖДАТЬ", color: actionColor, size: 24 },
+                { label: "Уверенность", val: `${d.conf}%`, color: d.conf >= 75 ? "var(--bot-green)" : "var(--bot-yellow)", size: 28 },
+                { label: "Точность NN", val: `${d.accuracy}%`, color: d.accuracy >= 60 ? "var(--bot-green)" : "var(--bot-yellow)", size: 28 },
+                { label: "P(ВВЕРХ)", val: `${(d.nnProb * 100).toFixed(0)}%`, color: d.nnProb > 0.55 ? "var(--bot-green)" : d.nnProb < 0.45 ? "var(--bot-red)" : "var(--bot-muted)", size: 28 },
+                { label: "Цена", val: `$${d.price > 100 ? Math.round(d.price).toLocaleString() : d.price.toFixed(5)}`, color: "var(--bot-text)", size: 18 },
+              ].map((m, i) => (
+                <div key={i} style={{ textAlign: "center" as const }}>
+                  <div style={{ fontSize: 10, color: "var(--bot-muted)", marginBottom: 6, textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>{m.label}</div>
+                  <div className="mono" style={{ fontSize: m.size, fontWeight: 800, color: m.color, lineHeight: 1 }}>{m.val}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Prob bar */}
+            <div>
+              <div style={{ height: 8, borderRadius: 4, background: "var(--bot-border)", overflow: "hidden" }}>
+                <div style={{ width: `${d.nnProb * 100}%`, height: "100%", borderRadius: 4, transition: "width 0.8s ease",
+                  background: `linear-gradient(90deg, var(--bot-red) 0%, var(--bot-yellow) 50%, var(--bot-green) 100%)` }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                <span style={{ fontSize: 10, color: "var(--bot-red)" }}>▼ ВНИЗ {(100 - d.nnProb * 100).toFixed(0)}%</span>
+                <span style={{ fontSize: 10, color: "var(--bot-muted)" }}>нейросеть · 3 модели</span>
+                <span style={{ fontSize: 10, color: "var(--bot-green)" }}>▲ ВВЕРХ {(d.nnProb * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+
+            {/* Agreement */}
+            <div style={{ marginTop: 12, padding: "8px 14px", borderRadius: 6, background: "var(--bot-surface-2)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>Согласие моделей</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: d.agreement === "full" ? "var(--bot-green)" : d.agreement === "none" ? "var(--bot-muted)" : "var(--bot-yellow)" }}>
+                {d.agreement === "full" ? "✓ Полное (NN + Индикаторы)" : d.agreement === "indicator" ? "Индикаторы" : d.agreement === "nn" ? "Нейросеть" : "Нет сигнала"}
+              </span>
+            </div>
+
+            {/* Forecast */}
+            {d.action !== "HOLD" && (
+              <div style={{ marginTop: 12, display: "flex", gap: 12 }}>
+                <div style={{ flex: 1, padding: "10px 14px", borderRadius: 6, background: isUp ? "rgba(63,185,80,0.08)" : "rgba(248,81,73,0.08)", border: `1px solid ${isUp ? "rgba(63,185,80,0.2)" : "rgba(248,81,73,0.2)"}` }}>
+                  <div style={{ fontSize: 10, color: "var(--bot-muted)", marginBottom: 4 }}>Цель через {d.forecastMinutes} мин (2×ATR)</div>
+                  <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: actionColor }}>
+                    ${d.targetPrice > 100 ? Math.round(d.targetPrice).toLocaleString() : d.targetPrice.toFixed(5)}
+                    <span style={{ fontSize: 12, marginLeft: 8 }}>{d.targetChangePct > 0 ? "+" : ""}{d.targetChangePct.toFixed(3)}%</span>
+                  </div>
+                </div>
+                <div style={{ flex: 1, padding: "10px 14px", borderRadius: 6, background: "var(--bot-surface-2)" }}>
+                  <div style={{ fontSize: 10, color: "var(--bot-muted)", marginBottom: 4 }}>Трейлинг-стоп ({d.action === "BUY" ? "LONG" : "SHORT"})</div>
+                  <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: "var(--bot-blue)" }}>
+                    ${d.action === "BUY"
+                      ? (d.price - 2 * d.atr).toFixed(d.price > 100 ? 0 : 5)
+                      : (d.price + 2 * d.atr).toFixed(d.price > 100 ? 0 : 5)}
+                    <span style={{ fontSize: 11, color: "var(--bot-muted)", marginLeft: 6 }}>2×ATR</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Indicators grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="glow-card p-4">
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--bot-text)", marginBottom: 12 }}>Индикаторы (8 шт.)</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                {[
+                  { name: "RSI (14)",      val: d.rsi.toFixed(1),      status: d.rsi < 30 ? "Перепродан" : d.rsi > 70 ? "Перекуплен" : "Нейтральный", col: d.rsi < 30 ? "var(--bot-green)" : d.rsi > 70 ? "var(--bot-red)" : "var(--bot-yellow)" },
+                  { name: "Stoch RSI",     val: d.stochRsi.toFixed(1), status: d.stochRsi < 20 ? "Перепродан" : d.stochRsi > 80 ? "Перекуплен" : "Нейтральный", col: d.stochRsi < 20 ? "var(--bot-green)" : d.stochRsi > 80 ? "var(--bot-red)" : "var(--bot-yellow)" },
+                  { name: "Williams %R",   val: d.williamsR.toFixed(1),status: d.williamsR < -80 ? "Перепродан" : d.williamsR > -20 ? "Перекуплен" : "Нейтральный", col: d.williamsR < -80 ? "var(--bot-green)" : d.williamsR > -20 ? "var(--bot-red)" : "var(--bot-yellow)" },
+                  { name: "CCI (20)",      val: d.cci.toFixed(0),      status: d.cci < -100 ? "Перепродан" : d.cci > 100 ? "Перекуплен" : "Нейтральный", col: d.cci < -100 ? "var(--bot-green)" : d.cci > 100 ? "var(--bot-red)" : "var(--bot-yellow)" },
+                  { name: "MACD",          val: (d.macd > 0 ? "+" : "") + d.macd.toFixed(3), status: d.macd > d.macdSignal ? "Бычий" : "Медвежий", col: d.macd > d.macdSignal ? "var(--bot-green)" : "var(--bot-red)" },
+                  { name: "EMA 9 / 21",   val: d.ema9 > d.ema21 ? "Выше" : "Ниже",          status: d.ema9 > d.ema21 ? "Бычий" : "Медвежий",    col: d.ema9 > d.ema21 ? "var(--bot-green)" : "var(--bot-red)" },
+                  { name: "ATR (14)",      val: d.atr > 1 ? d.atr.toFixed(1) : d.atr.toFixed(5), status: "Волатильность", col: "var(--bot-blue)" },
+                  { name: "Счёт Bull/Bear",val: `${d.bull} / ${d.bear}`, status: d.bull > d.bear ? "Бычий перевес" : "Медвежий перевес", col: d.bull > d.bear ? "var(--bot-green)" : "var(--bot-red)" },
+                ].map((ind, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 7, borderBottom: i < 7 ? "1px solid var(--bot-border)" : "none" }}>
+                    <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>{ind.name}</span>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span className="mono" style={{ fontSize: 11, color: "var(--bot-text)" }}>{ind.val}</span>
+                      <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "var(--bot-surface-2)", color: ind.col }}>{ind.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="glow-card p-4">
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--bot-text)", marginBottom: 12 }}>Разбивка уверенности</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {[
+                  { label: "Нейросеть (ансамбль)", val: d.nnConf, color: "var(--bot-blue)" },
+                  { label: "Индикаторы (8 штук)", val: d.indConf, color: "var(--bot-yellow)" },
+                  { label: "Итоговая уверенность", val: d.conf, color: actionColor },
+                  { label: "Точность (бэктест 300 св.)", val: d.accuracy, color: d.accuracy >= 60 ? "var(--bot-green)" : "var(--bot-red)" },
+                ].map((b, i) => (
+                  <div key={i}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, color: "var(--bot-muted)" }}>{b.label}</span>
+                      <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: b.color }}>{b.val}%</span>
+                    </div>
+                    <div style={{ height: 5, borderRadius: 3, background: "var(--bot-border)" }}>
+                      <div style={{ width: `${b.val}%`, height: "100%", borderRadius: 3, background: b.color, transition: "width 0.6s ease" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 16, padding: "10px 12px", borderRadius: 6, background: "var(--bot-surface-2)" }}>
+                <div style={{ fontSize: 10, color: "var(--bot-muted)", marginBottom: 6 }}>Архитектура ансамбля</div>
+                {[{ arch: "MLP 32→16→1", seed: 42 }, { arch: "MLP 24→12→1", seed: 123 }, { arch: "MLP 40→20→1", seed: 7 }].map((m, i) => (
+                  <div key={i} style={{ fontSize: 10, color: "var(--bot-muted)", marginBottom: 2 }}>
+                    <span style={{ color: "var(--bot-blue)" }}>#{i + 1}</span> {m.arch} · momentum SGD · 150 эпох
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Chart */}
+          <div className="glow-card p-4">
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--bot-text)", marginBottom: 10 }}>График свечей · {PAIRS.find(p => p.id === symbol)?.label}</div>
+            <div style={{ overflowX: "auto" }}>
+              <CandleChart candles={candles} height={90} />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -837,8 +912,7 @@ export default function Index() {
   const [sigInterval, setSigInterval]   = useState("5m");
   const [activeTrades, setActiveTrades] = useState<Trade[]>([]);
   const [notifications, setNotifs]      = useState<Notification[]>([]);
-  const [nnResult, setNNResult]         = useState<NNResult | null>(null);
-  const [isTraining, setIsTraining]     = useState(false);
+
 
   const tradesRef = useRef(activeTrades);
   tradesRef.current = activeTrades;
@@ -940,17 +1014,6 @@ export default function Index() {
     }).filter(t => !(t as unknown as { _closed?: boolean })._closed));
   }, [trailMult, addNotif]);
 
-  // ── Run NN ─────────────────────────────────────────────────────────────────
-  const runNN = useCallback(async (cs: Candle[], sym: string) => {
-    setIsTraining(true);
-    try {
-      const result = await analyzeWithNN(cs, sym);
-      setNNResult(result);
-    } finally {
-      setIsTraining(false);
-    }
-  }, []);
-
   // ── Open trade ─────────────────────────────────────────────────────────────
   const openTrade = useCallback((sig: Signal) => {
     const sym  = sig.pair.replace("/", "");
@@ -1010,31 +1073,7 @@ export default function Index() {
     updateTrailingStops(prices, candlesMap);
   }, [prices, candlesMap, updateTrailingStops]);
 
-  // ── NN: train when candles or symbol changes ──────────────────────────────
-  useEffect(() => {
-    const cs = candlesMap[symbol];
-    if (cs && cs.length >= 30) {
-      resetNN();
-      runNN(cs, symbol);
-    }
-  }, [candlesMap, symbol, runNN]);
 
-  // ── Auto-open trades based on NN ─────────────────────────────────────────
-  useEffect(() => {
-    if (!botActive || !nnResult || !nnResult.trained) return;
-    if (nnResult.confidence < 70) return;
-    const sym = PAIRS.find(p => p.id === symbol);
-    if (!sym) return;
-    const alreadyOpen = activeTrades.some(t => t.pair === sym.label);
-    if (alreadyOpen) return;
-    const sig = signals.find(s => s.pair === sym.label && s.conf >= 70);
-    if (!sig || sig.action === "HOLD") return;
-    // Only auto-open if NN agrees with signal
-    if ((nnResult.prediction === "UP" && sig.action === "BUY") ||
-        (nnResult.prediction === "DOWN" && sig.action === "SELL")) {
-      addNotif(`🤖 Авто-сигнал нейросети: ${sig.action} ${sym.label} (уверенность ${nnResult.confidence}%)`, "Brain", "#58a6ff");
-    }
-  }, [nnResult, botActive, signals, activeTrades, symbol, addNotif]);
 
   const fmt = (d: Date) => d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const candles = candlesMap[symbol] || [];
@@ -1104,7 +1143,7 @@ export default function Index() {
         <div key={tab}>
           {tab === "dashboard"  && <Dashboard prices={prices} candles={candles} activeTrades={activeTrades} balance={balance} botActive={botActive} setBotActive={setBotActive} addNotif={addNotif} />}
           {tab === "signals"    && <Signals signals={signals} prices={prices} openTrade={openTrade} botActive={botActive} interval={sigInterval} setInterval={iv => { setSigInterval(iv); fetchSignals(iv); }} loading={loadingSignals} />}
-          {tab === "ai"         && <AITab candles={candles} nnResult={nnResult} symbol={symbol} setSymbol={sym => { setSymbol(sym); fetchCandles(sym); }} isTraining={isTraining} />}
+          {tab === "ai"         && <AITab candles={candles} symbol={symbol} setSymbol={sym => { setSymbol(sym); fetchCandles(sym); }} />}
           {tab === "settings"   && <Settings balance={balance} setBalance={setBalance} trailMult={trailMult} setTrailMult={setTrailMult} riskPct={riskPct} setRiskPct={setRiskPct} strategy={strategy} setStrategy={setStrategy} addNotif={addNotif} />}
           {tab === "portfolio"  && <Portfolio activeTrades={activeTrades} closeTrade={closeTrade} prices={prices} />}
           {tab === "alerts"     && <AlertsTab notifications={notifications} clearNotifs={() => setNotifs([])} />}
