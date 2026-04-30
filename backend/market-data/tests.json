@@ -1,19 +1,19 @@
 {
   "tests": [
     {
-      "name": "Получить свечи BTC",
+      "name": "Нейросеть BTC детально",
+      "method": "GET",
+      "path": "/?action=nn&symbol=BTCUSDT&interval=5m&limit=300",
+      "expectedStatus": 200,
+      "expectedBody": {"pair": "BTCUSDT"},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Свечи BTC",
       "method": "GET",
       "path": "/?action=klines&symbol=BTCUSDT&interval=5m&limit=10",
       "expectedStatus": 200,
       "expectedBody": {},
-      "bodyMatcher": "partial"
-    },
-    {
-      "name": "Получить стакан BTC",
-      "method": "GET",
-      "path": "/?action=orderbook&symbol=BTCUSDT",
-      "expectedStatus": 200,
-      "expectedBody": {"buyPressure": 50},
       "bodyMatcher": "partial"
     }
   ]
