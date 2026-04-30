@@ -29,20 +29,40 @@ def handler(event: dict, context) -> dict:
 
     try:
         if action == "prices":
-            import urllib.parse
-            symbols_json = json.dumps(PAIRS)
-            url = "https://api.binance.com/api/v3/ticker/24hr?symbols=" + urllib.parse.quote(symbols_json)
-            raw_list = fetch(url)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def fetch_pair(pair: str) -> tuple:
+                try:
+                    t = fetch(f"https://api.binance.com/api/v3/ticker/24hr?symbol={pair}")
+                    return pair, {
+                        "price":       float(t["lastPrice"]),
+                        "change":      float(t["priceChangePercent"]),
+                        "high":        float(t["highPrice"]),
+                        "low":         float(t["lowPrice"]),
+                        "volume":      float(t["volume"]),
+                        "quoteVolume": float(t["quoteVolume"]),
+                    }
+                except Exception:
+                    # Fallback: берём из последней свечи
+                    try:
+                        kl = fetch(f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1m&limit=2")
+                        p0, p1 = float(kl[0][4]), float(kl[1][4])
+                        change = (p1 - p0) / p0 * 100 if p0 else 0
+                        return pair, {
+                            "price": p1, "change": round(change, 2),
+                            "high": float(kl[1][2]), "low": float(kl[1][3]),
+                            "volume": float(kl[1][5]), "quoteVolume": 0,
+                        }
+                    except Exception:
+                        return pair, None
+
             results = {}
-            for t in raw_list:
-                results[t["symbol"]] = {
-                    "price": float(t["lastPrice"]),
-                    "change": float(t["priceChangePercent"]),
-                    "high": float(t["highPrice"]),
-                    "low": float(t["lowPrice"]),
-                    "volume": float(t["volume"]),
-                    "quoteVolume": float(t["quoteVolume"]),
-                }
+            with ThreadPoolExecutor(max_workers=7) as ex:
+                futures = {ex.submit(fetch_pair, p): p for p in PAIRS}
+                for f in as_completed(futures):
+                    pair, data = f.result()
+                    if data:
+                        results[pair] = data
             return {"statusCode": 200, "headers": CORS, "body": json.dumps(results)}
 
         elif action == "klines":

@@ -710,18 +710,45 @@ export default function Index() {
     setNotifs(prev => [...prev.slice(-19), { id: Date.now().toString(), icon, msg, time: new Date(), color }]);
   }, []);
 
-  // ── Fetch prices ───────────────────────────────────────────────────────────
+  // ── Fetch prices — напрямую с Binance (CORS разрешён для браузеров) ────────
   const fetchPrices = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}?action=prices`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setPrices(data);
-    } catch (e) { void e; }
+    const results: Record<string, PriceData> = {};
+    await Promise.all(
+      PAIRS.map(async (pair) => {
+        try {
+          const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${pair.id}`);
+          if (!res.ok) return;
+          const t = await res.json();
+          results[pair.id] = {
+            price:       parseFloat(t.lastPrice),
+            change:      parseFloat(t.priceChangePercent),
+            high:        parseFloat(t.highPrice),
+            low:         parseFloat(t.lowPrice),
+            volume:      parseFloat(t.volume),
+          };
+        } catch (e) { void e; }
+      })
+    );
+    if (Object.keys(results).length > 0) setPrices(results);
   }, []);
 
-  // ── Fetch candles for a symbol ─────────────────────────────────────────────
+  // ── Fetch candles — через бэкенд (свечи работают) ─────────────────────────
   const fetchCandles = useCallback(async (sym: string) => {
+    try {
+      // Сначала пробуем напрямую Binance
+      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=5m&limit=100`);
+      if (res.ok) {
+        const raw = await res.json();
+        const data: Candle[] = raw.map((c: unknown[]) => ({
+          time: Number(c[0]), open: parseFloat(c[1] as string),
+          high: parseFloat(c[2] as string), low: parseFloat(c[3] as string),
+          close: parseFloat(c[4] as string), volume: parseFloat(c[5] as string),
+        }));
+        setCandlesMap(prev => ({ ...prev, [sym]: data }));
+        return data;
+      }
+    } catch (e) { void e; }
+    // Fallback: через бэкенд
     try {
       const res = await fetch(`${API_URL}?action=klines&symbol=${sym}&interval=5m&limit=100`);
       if (!res.ok) return;
@@ -866,15 +893,15 @@ export default function Index() {
 
     const priceInterval = setInterval(fetchPrices, 10000);
     const candleInterval = setInterval(() => {
-      fetchCandles(symbol);
+      PAIRS.forEach(p => fetchCandles(p.id));
     }, 30000);
 
     return () => { clearInterval(priceInterval); clearInterval(candleInterval); };
   }, [fetchPrices, fetchCandles, symbol]);
 
-  // ── Regenerate signals when data updates ──────────────────────────────────
+  // ── Regenerate signals когда загрузились свечи (цены опциональны) ─────────
   useEffect(() => {
-    if (Object.keys(prices).length > 0 && Object.keys(candlesMap).length > 0) {
+    if (Object.keys(candlesMap).length > 0) {
       generateSignals(candlesMap, prices);
     }
   }, [prices, candlesMap, generateSignals]);
