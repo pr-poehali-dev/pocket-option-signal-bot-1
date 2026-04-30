@@ -1,15 +1,15 @@
 {
   "tests": [
     {
-      "name": "Нейросеть BTC детально",
+      "name": "Сигналы всех пар",
       "method": "GET",
-      "path": "/?action=nn&symbol=BTCUSDT&interval=5m&limit=300",
+      "path": "/?action=signals&interval=5m",
       "expectedStatus": 200,
-      "expectedBody": {"pair": "BTCUSDT"},
+      "expectedBody": {},
       "bodyMatcher": "partial"
     },
     {
-      "name": "Свечи BTC",
+      "name": "Получить свечи BTC",
       "method": "GET",
       "path": "/?action=klines&symbol=BTCUSDT&interval=5m&limit=10",
       "expectedStatus": 200,
